@@ -1,0 +1,827 @@
+<html>
+
+<head>
+<title>ICG WebGL &mdash; HW1</title>
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk" crossorigin="anonymous">
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js" integrity="sha384-OgVRvuATP1z7JjHLkuOU7Xw704+h835Lr+6QL9UvYjZE3Ipu6Tp75j7Bh/kR0JKI" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="./js/glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="./js/webgl-utils.js"></script>
+
+<script type="text/javascript" src="./shaders/flat-vertex.js"></script>
+<script type="text/javascript" src="./shaders/flat-fragment.js"></script>
+<script type="text/javascript" src="./shaders/gouraud-vertex.js"></script>
+<script type="text/javascript" src="./shaders/gouraud-fragment.js"></script>
+<script type="text/javascript" src="./shaders/phong-vertex.js"></script>
+<script type="text/javascript" src="./shaders/phong-fragment.js"></script>
+<script type="text/javascript" src="./shaders/cel-vertex.js"></script>
+<script type="text/javascript" src="./shaders/cel-fragment.js"></script>
+<script type="text/javascript" src="./shaders/outline-vertex.js"></script>
+<script type="text/javascript" src="./shaders/outline-fragment.js"></script>
+
+<script type="text/javascript">
+    // shader code mapping
+    let shaderSourceCode = {
+        "flat": { "vertex": flatVertex, "fragment": flatFragment },
+        "gouraud": { "vertex": gouraudVertex, "fragment": gouraudFragment },
+        "phong": { "vertex": phongVertex, "fragment": phongFragment },
+        "cel": { "vertex": celVertex, "fragment": celFragment },
+        "outline": { "vertex": outlineVertex, "fragment": outlineFragment }
+    }
+
+    let userConfig = {
+        "light-position": [[10.0, 1.0, 1.0], [-2.0, 15.0, 3.0], [10.0, 1.0, 20]],
+        "light-color": [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+        "item": [
+            { shader: 'Flat', shear: 90, scale: [1, 1, 1], rotate:{ degree: 35, lastTime: new Date().getTime(), lastAngle: 0, autorotate: true, direction: [0, 1, 0] }, constant: { Ka: 0.1, Kd: 0.1, Ks: 0.1, Shininess: 5 }, location: [-35, 0 ,-80], model: "Teapot" },
+            { shader: 'Gouraud', shear: 90, scale: [1, 1, 1], rotate:{ degree: 35, lastTime: new Date().getTime(), lastAngle: 0, autorotate: true, direction: [0, 1, 0] }, constant: { Ka: 0.1, Kd: 0.1, Ks: 0.1, Shininess: 5 }, location: [0, 0 ,-80], model: "Teapot" },
+            { shader: 'Phong', shear: 90, scale: [1, 1, 1], rotate:{ degree: 35, lastTime: new Date().getTime(), lastAngle: 0, autorotate: true, direction: [0, 1, 0] }, constant: { Ka: 0.1, Kd: 0.1, Ks: 0.1, Shininess: 5 }, location: [35, 0 ,-80], model: "Teapot" }
+        ]
+    }
+
+    // common variables
+    var gl;
+    var flatShaderProgram;
+    var gouraudShaderProgram;
+    var phongShaderProgram;
+    var celShaderProgram;
+    var outlineShaderProgram;
+
+    var mvMatrix = mat4.create();
+    var pMatrix  = mat4.create();
+
+    var models = {};
+    var partyMode = false;
+
+    var modelVertexPositionBuffer;
+    var modelVertexNormalBuffer;
+    var modelVertexFrontColorBuffer;
+
+    var startTime = new Date().getTime();
+    var lastTime    = 0;
+
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("webgl") ||canvas.getContext("experimental-webgl");
+            gl.getExtension('OES_standard_derivatives');
+            gl.viewportWidth  = canvas.width;
+            gl.viewportHeight = canvas.height;
+        } 
+        catch (e) {
+            console.log(e);
+        }
+
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+
+        }
+    }
+
+    function getShader(gl, shaderSource, type) {
+        if (!shaderSource) {
+            return null;
+        }
+
+        var shader;
+        if (type == "fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } 
+        else if (type == "vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } 
+        else {
+            return null;
+        }
+
+        gl.shaderSource(shader, shaderSource);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+    function initShader(name) {
+        var fragmentShader = getShader(gl, shaderSourceCode[name]["fragment"], "fragment");
+        var vertexShader   = getShader(gl, shaderSourceCode[name]["vertex"], "vertex");
+
+        let shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+        shaderProgram.vertexFrontColorAttribute = gl.getAttribLocation(shaderProgram, "aFrontColor");
+        gl.enableVertexAttribArray(shaderProgram.vertexFrontColorAttribute);
+        shaderProgram.vertexNormalAttribute = gl.getAttribLocation(shaderProgram, "aVertexNormal");
+        gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
+
+        let lightAttributes = ['lightColor1', 'lightColor2', 'lightColor3', 'lightPosition1', 'lightPosition2', 'lightPosition3']
+        lightAttributes.map((attr) => {
+            shaderProgram[attr] = gl.getUniformLocation(shaderProgram, attr);
+        })
+
+        shaderProgram.Ka  = gl.getUniformLocation(shaderProgram, "Ka");
+        shaderProgram.Kd  = gl.getUniformLocation(shaderProgram, "Kd");
+        shaderProgram.Ks  = gl.getUniformLocation(shaderProgram, "Ks");
+        shaderProgram.Shininess  = gl.getUniformLocation(shaderProgram, "Shininess");
+
+        shaderProgram.pMatrixUniform  = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+
+        if(name == "outline"){
+            shaderProgram.outlineWidth = gl.getUniformLocation(shaderProgram, "outlineWidth");
+        }
+
+        return shaderProgram;
+    }
+
+    function setMatrixUniforms(shaderProgram) {
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+    }
+
+    function degToRad(degrees) {
+        return degrees * Math.PI / 180;
+    }
+
+    function handleLoadedModel(modelData, name) {
+        let modelVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexPositionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(modelData.vertexPositions), gl.STATIC_DRAW);
+        modelVertexPositionBuffer.itemSize = 3;
+        modelVertexPositionBuffer.numItems = modelData.vertexPositions.length / 3;
+
+        let modelVertexNormalBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexNormalBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(modelData.vertexNormals), gl.STATIC_DRAW);
+        modelVertexNormalBuffer.itemSize = 3;
+        modelVertexNormalBuffer.numItems = modelData.vertexNormals.length / 3;
+
+        let modelVertexFrontColorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexFrontColorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(modelData.vertexFrontcolors), gl.STATIC_DRAW);
+        modelVertexFrontColorBuffer.itemSize = 3;
+        modelVertexFrontColorBuffer.numItems = modelData.vertexFrontcolors.length / 3;
+
+        models[name] = {
+            modelVertexPositionBuffer: modelVertexPositionBuffer,
+            modelVertexNormalBuffer: modelVertexNormalBuffer,
+            modelVertexFrontColorBuffer: modelVertexFrontColorBuffer
+        }
+    }
+
+    function loadModel(model) {
+        if(model == 'Hide') return;
+        var request = new XMLHttpRequest();
+        request.open("GET", "./model/" + model + ".json");
+        request.onreadystatechange = function () {
+            if (request.readyState == 4) {
+                handleLoadedModel(JSON.parse(request.responseText), model);
+            }
+        }
+        request.send();
+    }
+
+    /*
+        TODO HERE:
+        add two or more objects showing on the canvas
+        (it needs at least three objects showing at the same time)
+    */
+    function drawScene() {
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        // Setup Projection Matrix
+        mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 200.0, pMatrix);
+
+        for(let i = 0; i < 3; i++){
+            let shaderProgram = getShaderByName(userConfig['item'][i]['shader']);
+            let model = userConfig['item'][i]['model'];
+            let position = userConfig['item'][i]['location'];
+
+            if(!models.hasOwnProperty(model)){
+                continue;
+            }
+            let modelVertexPositionBuffer = models[model].modelVertexPositionBuffer;
+            let modelVertexNormalBuffer = models[model].modelVertexNormalBuffer;
+            let modelVertexFrontColorBuffer = models[model].modelVertexFrontColorBuffer;
+
+            // Setup Model-View Matrix
+            mat4.identity(mvMatrix);
+
+            mat4.translate(mvMatrix, position);
+            mat4.scale(mvMatrix, userConfig['item'][i]['scale']);
+
+            if(userConfig['item'][i]['rotate']['autorotate']){
+                let now = new Date().getTime();
+                let elapsed = (now - userConfig['item'][i]['rotate']['lastTime']) / 1000;
+                userConfig['item'][i]['rotate']['lastTime'] = now;
+                userConfig['item'][i]['rotate']['lastAngle'] += userConfig['item'][i]['rotate']['degree'] * elapsed
+                mat4.rotate(mvMatrix, degToRad(userConfig['item'][i]['rotate']['lastAngle']), userConfig['item'][i]['rotate']['direction']);
+            }else{
+                mat4.rotate(mvMatrix, degToRad(userConfig['item'][i]['rotate']['degree']), userConfig['item'][i]['rotate']['direction']);
+            }
+
+            let shearMatrix = mat4.create();
+            mat4.identity(shearMatrix);
+            shearMatrix[4] = 1 / Math.tan(degToRad(userConfig['item'][i]['shear']));
+            mat4.multiply(mvMatrix, shearMatrix, mvMatrix); // apply shear 
+
+            // If is cel shading, draw outline first
+            // only draw outline when the model is teapot
+            if(userConfig['item'][i]['shader'] == 'Cel' && model == 'Teapot'){
+                [0.35, -0.35].forEach((outlineWidth) => {
+                    gl.enable(gl.CULL_FACE);
+                    gl.cullFace(gl.FRONT);
+
+                    gl.useProgram(outlineShaderProgram);
+                    setMatrixUniforms(outlineShaderProgram);
+
+                    // Setup model position data
+                    gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexPositionBuffer);
+                    gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, modelVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                    // Setup model front color data
+                    gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexFrontColorBuffer);
+                    gl.vertexAttribPointer(shaderProgram.vertexFrontColorAttribute, modelVertexFrontColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+                    
+                    // Setup model vertex normal data
+                    gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexNormalBuffer);
+                    gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, modelVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                    gl.uniform1f(outlineShaderProgram.outlineWidth, outlineWidth);
+
+                    gl.drawArrays(gl.TRIANGLES, 0, modelVertexPositionBuffer.numItems);
+
+                    gl.disable(gl.CULL_FACE);
+                });
+            }
+
+            // original shader
+            gl.useProgram(shaderProgram);
+            setMatrixUniforms(shaderProgram);
+
+            // Setup model position data
+            gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexPositionBuffer);
+            gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, modelVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+            // Setup model front color data
+            gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexFrontColorBuffer);
+            gl.vertexAttribPointer(shaderProgram.vertexFrontColorAttribute, modelVertexFrontColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+            
+            // Setup model vertex normal data
+            gl.bindBuffer(gl.ARRAY_BUFFER, modelVertexNormalBuffer);
+            gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, modelVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+            // Setup light color
+            gl.uniform3fv(shaderProgram.lightColor1, userConfig["light-color"][0]);
+            gl.uniform3fv(shaderProgram.lightColor2, userConfig["light-color"][1]);
+            gl.uniform3fv(shaderProgram.lightColor3, userConfig["light-color"][2]);
+            gl.uniform4fv(shaderProgram.lightPosition1, userConfig["light-position"][0].concat([1.0]));
+            gl.uniform4fv(shaderProgram.lightPosition2, userConfig["light-position"][1].concat([1.0]));
+            gl.uniform4fv(shaderProgram.lightPosition3, userConfig["light-position"][2].concat([1.0]));
+
+            // Setup constant
+            gl.uniform1f(shaderProgram.Ka, userConfig['item'][i]['constant']['Ka']);
+            gl.uniform1f(shaderProgram.Kd, userConfig['item'][i]['constant']['Kd']);
+            gl.uniform1f(shaderProgram.Ks, userConfig['item'][i]['constant']['Ks']);
+            gl.uniform1f(shaderProgram.Shininess, userConfig['item'][i]['constant']['Shininess']);
+                              
+            gl.drawArrays(gl.TRIANGLES, 0, modelVertexPositionBuffer.numItems);
+        }
+    }
+
+    function tick() {
+        requestAnimFrame(tick);
+        drawScene();
+        if(partyMode){
+            updatePartyLight();
+        }
+    }
+
+    function getShaderByName(name){
+        if(name == "Flat"){
+            return flatShaderProgram;
+        }
+        if(name == "Gouraud"){
+            return gouraudShaderProgram;
+        }
+        if(name == "Phong"){
+            return phongShaderProgram;
+        }
+        if(name == "Cel"){
+            return celShaderProgram;
+        }
+        throw "Unknown Shader";
+    }
+
+    function webGLStart() {
+        var canvas = document.getElementById("ICG-canvas");
+        initGL(canvas);
+        flatShaderProgram = initShader("flat");
+        gouraudShaderProgram = initShader("gouraud");
+        phongShaderProgram = initShader("phong");
+        celShaderProgram = initShader("cel");
+        outlineShaderProgram = initShader("outline");
+        loadModel('Teapot');
+
+        gl.clearColor(0.0, 0.2, 0.2, 1.0);
+        gl.enable(gl.DEPTH_TEST);
+
+        tick();
+    }
+</script>
+</head>
+
+<body onload="webGLStart();">
+    <div class="container-fluid">
+        <div class="row justify-content-center">
+            <canvas id="ICG-canvas" style="border: none;" width="1280" height="550" class=""></canvas>
+        </div>
+        <div class="row">
+            <div class="col-sm">
+                <h3>Item 1</h3>
+                <div class="form-group form-check">
+                    <div class="form-group">
+                        <label for="item1-shader">Shader</label>
+                        <select class="form-control" id="item1-shader">
+                            <option>Flat</option>
+                            <option>Gouraud</option>
+                            <option>Phong</option>
+                            <option>Cel</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group form-check">
+                    <div class="form-group">
+                        <label for="item1-model">Model</label>
+                        <select class="form-control" id="item1-model">
+                            <option>Teapot</option>
+                            <option>Csie</option>
+                            <option>Car_road</option>
+                            <option>Fighter</option>
+                            <option>Longteap</option>
+                            <option>Mig27</option>
+                            <option>Plant</option>
+                            <option>Tomcat</option>
+                            <option>Church_s</option>
+                            <option>Easter</option>
+                            <option>Kangaroo</option>
+                            <option>Mercedes</option>
+                            <option>Patchair</option>
+                            <option>Hide</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Scale</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-scale-x" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">x</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-scale-y" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">y</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-scale-z" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">z</span>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Shear</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-shear" placeholder="degree" max="180" min="0" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">°</span>
+                    </div>
+                </div>
+                <div class="card" style="margin: 15px 0;">
+                    <div class="card-body">
+                        <div class="input-group mb-3">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text">Rotate</span>
+                            </div>
+                            <input type="number" class="form-control" id="item1-rotate" placeholder="degree" max="360" min="0" />
+                            <div class="input-group-append">
+                                <span class="input-group-text" id="item1-rotate-unit">° / sec</span>
+                            </div>
+                        </div>
+                        <div class="form-group form-check">
+                            <input type="checkbox" class="form-check-input" id="item1-autorotate" checked>
+                            <label class="form-check-label" for="item1-autorotate">Auto-rotate</label>
+                        </div>
+                        <span>Rotate about</span>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item1-rotate-direction-x" name="item1-rotate-direction" class="custom-control-input">
+                            <label class="custom-control-label" for="item1-rotate-direction-x">x-axis</label>
+                        </div>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item1-rotate-direction-y" name="item1-rotate-direction" class="custom-control-input" checked>
+                            <label class="custom-control-label" for="item1-rotate-direction-y">y-axis</label>
+                        </div>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item1-rotate-direction-z" name="item1-rotate-direction" class="custom-control-input">
+                            <label class="custom-control-label" for="item1-rotate-direction-z">z-axis</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Ka</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-constant-Ka" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Kd</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-constant-Kd" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Ks</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-constant-Ks" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Shininess</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-constant-Shininess" placeholder="" min="0" />
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Location: (</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-location-x" placeholder=""  />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-location-y" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="item1-location-z" placeholder="" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">)</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm">
+                <h3>Item 2</h3>
+                <div class="form-group form-check">
+                    <div class="form-group">
+                        <label for="item2-shader">Shader</label>
+                        <select class="form-control" id="item2-shader">
+                            <option>Flat</option>
+                            <option>Gouraud</option>
+                            <option>Phong</option>
+                            <option>Cel</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group form-check">
+                    <div class="form-group">
+                        <label for="item2-model">Model</label>
+                        <select class="form-control" id="item2-model">
+                            <option>Teapot</option>
+                            <option>Csie</option>
+                            <option>Car_road</option>
+                            <option>Fighter</option>
+                            <option>Longteap</option>
+                            <option>Mig27</option>
+                            <option>Plant</option>
+                            <option>Tomcat</option>
+                            <option>Church_s</option>
+                            <option>Easter</option>
+                            <option>Kangaroo</option>
+                            <option>Mercedes</option>
+                            <option>Patchair</option>
+                            <option>Hide</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Scale</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-scale-x" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">x</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-scale-y" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">y</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-scale-z" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">z</span>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Shear</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-shear" placeholder="degree" max="180" min="0" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">°</span>
+                    </div>
+                </div>
+                <div class="card" style="margin: 15px 0;">
+                    <div class="card-body">
+                        <div class="input-group mb-3">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text">Rotate</span>
+                            </div>
+                            <input type="number" class="form-control" id="item2-rotate" placeholder="degree" max="360" min="0" />
+                            <div class="input-group-append">
+                                <span class="input-group-text" id="item2-rotate-unit">° / sec</span>
+                            </div>
+                        </div>
+                        <div class="form-group form-check">
+                            <input type="checkbox" class="form-check-input" id="item2-autorotate" checked>
+                            <label class="form-check-label" for="item2-autorotate">Auto-rotate</label>
+                        </div>
+                        <span>Rotate about</span>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item2-rotate-direction-x" name="item2-rotate-direction" class="custom-control-input">
+                            <label class="custom-control-label" for="item2-rotate-direction-x">x-axis</label>
+                        </div>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item2-rotate-direction-y" name="item2-rotate-direction" class="custom-control-input" checked>
+                            <label class="custom-control-label" for="item2-rotate-direction-y">y-axis</label>
+                        </div>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item2-rotate-direction-z" name="item2-rotate-direction" class="custom-control-input">
+                            <label class="custom-control-label" for="item2-rotate-direction-z">z-axis</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Ka</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-constant-Ka" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Kd</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-constant-Kd" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Ks</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-constant-Ks" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Shininess</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-constant-Shininess" placeholder="" min="0" />
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Location: (</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-location-x" placeholder=""  />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-location-y" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="item2-location-z" placeholder="" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">)</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm">
+                <h3>Item 3</h3>
+                <div class="form-group form-check">
+                    <div class="form-group">
+                        <label for="item3-shader">Shader</label>
+                        <select class="form-control" id="item3-shader">
+                            <option>Flat</option>
+                            <option>Gouraud</option>
+                            <option>Phong</option>
+                            <option>Cel</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group form-check">
+                    <div class="form-group">
+                        <label for="item3-model">Model</label>
+                        <select class="form-control" id="item3-model">
+                            <option>Teapot</option>
+                            <option>Csie</option>
+                            <option>Car_road</option>
+                            <option>Fighter</option>
+                            <option>Longteap</option>
+                            <option>Mig27</option>
+                            <option>Plant</option>
+                            <option>Tomcat</option>
+                            <option>Church_s</option>
+                            <option>Easter</option>
+                            <option>Kangaroo</option>
+                            <option>Mercedes</option>
+                            <option>Patchair</option>
+                            <option>Hide</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Scale</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-scale-x" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">x</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-scale-y" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">y</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-scale-z" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">z</span>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Shear</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-shear" placeholder="degree" max="180" min="0" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">°</span>
+                    </div>
+                </div>
+                <div class="card" style="margin: 15px 0;">
+                    <div class="card-body">
+                        <div class="input-group mb-3">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text">Rotate</span>
+                            </div>
+                            <input type="number" class="form-control" id="item3-rotate" placeholder="degree" max="360" min="0" />
+                            <div class="input-group-append">
+                                <span class="input-group-text" id="item3-rotate-unit">° / sec</span>
+                            </div>
+                        </div>
+                        <div class="form-group form-check">
+                            <input type="checkbox" class="form-check-input" id="item3-autorotate" checked>
+                            <label class="form-check-label" for="item3-autorotate">Auto-rotate</label>
+                        </div>
+                        <span>Rotate about</span>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item3-rotate-direction-x" name="item3-rotate-direction" class="custom-control-input">
+                            <label class="custom-control-label" for="item3-rotate-direction-x">x-axis</label>
+                        </div>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item3-rotate-direction-y" name="item3-rotate-direction" class="custom-control-input" checked>
+                            <label class="custom-control-label" for="item3-rotate-direction-y">y-axis</label>
+                        </div>
+                        <div class="custom-control custom-radio custom-control-inline">
+                            <input type="radio" id="item3-rotate-direction-z" name="item3-rotate-direction" class="custom-control-input">
+                            <label class="custom-control-label" for="item3-rotate-direction-z">z-axis</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Ka</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-constant-Ka" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Kd</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-constant-Kd" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Ks</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-constant-Ks" placeholder="" min="0" step="0.1" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Shininess</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-constant-Shininess" placeholder="" min="0" />
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Location: (</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-location-x" placeholder=""  />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-location-y" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="item3-location-z" placeholder="" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-sm">
+                <h3>Light Position</h3>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Light 1 Position: (</span>
+                    </div>
+                    <input type="number" class="form-control" id="light1-position-x" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="light1-position-y" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="light1-position-z" placeholder="" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">)</span>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Light 2 Position: (</span>
+                    </div>
+                    <input type="number" class="form-control" id="light2-position-x" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="light2-position-y" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="light2-position-z" placeholder="" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">)</span>
+                    </div>
+                </div>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Light 3 Position: (</span>
+                    </div>
+                    <input type="number" class="form-control" id="light3-position-x" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="light3-position-y" placeholder="" />
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">,</span>
+                    </div>
+                    <input type="number" class="form-control" id="light3-position-z" placeholder="" />
+                    <div class="input-group-append">
+                        <span class="input-group-text">)</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm">
+                <h3>Light Color</h3>
+                <h4>Light 1</h4>
+                <span>Color: <span id="light1-color-indicator" style="background-color: rgb(255, 255, 255); color: rgb(0, 0, 0); padding: 5px;">rgb(255, 255, 255)</span></span>
+                <input type="text" class="form-control" style="display:none" id="light1-color" value="255, 255, 255"/>
+                <canvas id="colorCanvas1" class="color-canvas" style="width: 100%; display: none;" height="200"></canvas><br />
+                <span>Brightness</span><br />
+                <input type="range" id="light1-brightness" min="0" max="60" value="30">
+
+                <h4>Light 2</h4>
+                <span>Color: <span id="light2-color-indicator" style="background-color: rgb(255, 255, 255); color: rgb(0, 0, 0); padding: 5px;">rgb(255, 255, 255)</span></span>
+                <input type="text" class="form-control" style="display:none" id="light2-color" value="255, 255, 255"/>
+                <canvas id="colorCanvas2" class="color-canvas" style="width: 100%; display: none;" height="200"></canvas><br />
+                <span>Brightness</span><br />
+                <input type="range" id="light2-brightness" min="0" max="60" value="30">
+
+                <h4>Light 3</h4>
+                <span>Color: <span id="light3-color-indicator" style="background-color: rgb(255, 255, 255); color: rgb(0, 0, 0); padding: 5px;">rgb(255, 255, 255)</span></span>
+                <input type="text" class="form-control" style="display:none" id="light3-color" value="255, 255, 255"/>
+                <canvas id="colorCanvas3" class="color-canvas" style="width: 100%; display: none;" height="200"></canvas><br />
+                <span>Brightness</span><br />
+                <input type="range" id="light3-brightness" min="0" max="60" value="30">
+                <br /><br />
+                <button type="button" class="btn btn-primary btn-lg btn-block" id="party-mode-btn">Enable Party Mode</button>
+            </div>
+
+            <div class="col-sm">
+
+            </div>
+        </div>
+    </div>
+    <br/>
+    <script src="js/color-picker.js"></script>
+    <script src="js/script.js"></script>
+</body>
+</html>
